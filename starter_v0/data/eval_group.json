@@ -1,7 +1,259 @@
 {
   "dataset_id": "day04_v2_research_group",
   "dataset_role": "group",
-  "description": "Template để NHÓM tự viết đúng 10 case: 5 single-turn dùng query và 5 multi-turn dùng turns. Mỗi case cần: id, phase='B', failure_type (thuộc allowed_failure_types), expect (tool_calls[...] hoặc no_tool=true), và metadata.what_it_tests. File để trống có chủ đích vì mỗi nhóm phải tự thiết kế các case này.",
+  "description": "Bộ 10 team eval case của nhóm: 5 single-turn và 5 multi-turn, tập trung vào source_audit, argument fidelity, correction carryover và no-tool boundary.",
   "allowed_failure_types": ["wrong_tool", "wrong_arg_value", "wrong_boundary", "unnecessary_tool", "out_of_scope", "missing_info"],
-  "cases": []
+  "cases": [
+    {
+      "id": "G01_source_audit_thresholds",
+      "phase": "B",
+      "query": "Audit độ đa dạng của hai nguồn đã thu thập: OpenAI https://openai.com/research/a và Anthropic https://anthropic.com/research/b. Yêu cầu ít nhất 2 nguồn và 2 tên miền.",
+      "failure_type": "wrong_tool",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "source_audit",
+            "args": {
+              "min_sources": 2,
+              "min_domains": 2
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Tool mới source_audit được chọn cho dữ liệu đã có và giữ đúng hai ngưỡng audit."
+      }
+    },
+    {
+      "id": "G02_lookup_general_limit",
+      "phase": "B",
+      "query": "Tra cứu trên web về điện toán lượng tử, lấy tối đa 3 kết quả.",
+      "failure_type": "wrong_arg_value",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "lookup",
+            "args": {
+              "query": "điện toán lượng tử",
+              "topic": "general",
+              "max_results": 3
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Giữ nguyên cụm chủ đề tiếng Việt và count trong một web lookup không yêu cầu tin mới."
+      }
+    },
+    {
+      "id": "G03_format_existing_items",
+      "phase": "B",
+      "query": "Từ hai mục đã có: Báo cáo A https://example.com/a và Báo cáo B https://example.org/b, trình bày thành danh sách gạch đầu dòng; không tìm thêm.",
+      "failure_type": "wrong_tool",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "format",
+            "args": {
+              "template": "bullets"
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Phân biệt format dữ liệu có sẵn với lookup/fetch và chọn đúng template bullets."
+      }
+    },
+    {
+      "id": "G04_audit_missing_items",
+      "phase": "B",
+      "query": "Kiểm tra giúp mình độ đa dạng nguồn của bản nghiên cứu này.",
+      "failure_type": "missing_info",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "clarify",
+            "args": {
+              "response_type": "text"
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Hỏi xin danh sách nguồn thay vì gọi source_audit với items rỗng hoặc tự tạo nguồn."
+      }
+    },
+    {
+      "id": "G05_capability_no_action",
+      "phase": "B",
+      "query": "Bạn có hỗ trợ đánh giá độ đa dạng nguồn không? Chỉ trả lời khả năng, chưa chạy công cụ.",
+      "failure_type": "unnecessary_tool",
+      "expect": {
+        "no_tool": true,
+        "behavior": "answer_without_tool"
+      },
+      "metadata": {
+        "what_it_tests": "Câu hỏi meta về capability phải được trả lời trực tiếp, không gọi source_audit."
+      }
+    },
+    {
+      "id": "G06_multiturn_topic_timeframe_limit",
+      "phase": "B",
+      "turns": [
+        {
+          "role": "user",
+          "content": "Tìm tin về xe điện trong tháng này."
+        },
+        {
+          "role": "user",
+          "content": "Đổi chủ đề sang pin thể rắn."
+        },
+        {
+          "role": "user",
+          "content": "Chỉ tìm pin thể rắn trên web, vẫn là tin trong tháng này và lấy 4 kết quả."
+        }
+      ],
+      "failure_type": "wrong_arg_value",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "lookup",
+            "args": {
+              "query": "pin thể rắn",
+              "topic": "news",
+              "timeframe": "month",
+              "max_results": 4
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Latest topic correction wins while timeframe and explicit result count are preserved."
+      }
+    },
+    {
+      "id": "G07_multiturn_format_correction",
+      "phase": "B",
+      "turns": [
+        {
+          "role": "user",
+          "content": "Hãy trình bày hai mục đã có, A https://example.com/a và B https://example.org/b, thành bản brief."
+        },
+        {
+          "role": "user",
+          "content": "Đổi sang dạng sections."
+        },
+        {
+          "role": "user",
+          "content": "Chốt lại dùng bullets, không tìm thêm."
+        }
+      ],
+      "failure_type": "wrong_arg_value",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "format",
+            "args": {
+              "template": "bullets"
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Output-format correction ở lượt cuối ghi đè hai lựa chọn cũ mà không gọi research tool."
+      }
+    },
+    {
+      "id": "G08_multiturn_audit_threshold_correction",
+      "phase": "B",
+      "turns": [
+        {
+          "role": "user",
+          "content": "Audit ba nguồn này: https://openai.com/a, https://anthropic.com/b và https://deepmind.google/c."
+        },
+        {
+          "role": "user",
+          "content": "Ban đầu yêu cầu tối thiểu 2 tên miền."
+        },
+        {
+          "role": "user",
+          "content": "Nâng yêu cầu thành ít nhất 3 nguồn và 3 tên miền, vẫn audit danh sách trên."
+        }
+      ],
+      "failure_type": "wrong_arg_value",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "source_audit",
+            "args": {
+              "min_sources": 3,
+              "min_domains": 3
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Nguồn được carry qua các lượt và ngưỡng audit mới nhất ghi đè ngưỡng cũ."
+      }
+    },
+    {
+      "id": "G09_multiturn_audit_fill_missing",
+      "phase": "B",
+      "turns": [
+        {
+          "role": "user",
+          "content": "Kiểm tra độ đa dạng nguồn cho mình."
+        },
+        {
+          "role": "user",
+          "content": "Danh sách gồm https://example.com/report và https://openai.com/research."
+        },
+        {
+          "role": "user",
+          "content": "Dùng ngưỡng 2 nguồn và 2 tên miền."
+        }
+      ],
+      "failure_type": "missing_info",
+      "expect": {
+        "tool_calls": [
+          {
+            "name": "source_audit",
+            "args": {
+              "min_sources": 2,
+              "min_domains": 2
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "what_it_tests": "Sau khi user bổ sung items, agent phải audit ngay thay vì hỏi lại dữ liệu đã có."
+      }
+    },
+    {
+      "id": "G10_multiturn_cancel_action",
+      "phase": "B",
+      "turns": [
+        {
+          "role": "user",
+          "content": "Gửi bản tin này lên Telegram giúp mình."
+        },
+        {
+          "role": "user",
+          "content": "Khoan, đừng gửi."
+        },
+        {
+          "role": "user",
+          "content": "Hủy yêu cầu đó; chỉ cho mình biết agent có những khả năng gì."
+        }
+      ],
+      "failure_type": "wrong_boundary",
+      "expect": {
+        "no_tool": true,
+        "behavior": "answer_without_tool"
+      },
+      "metadata": {
+        "what_it_tests": "Yêu cầu hủy ở lượt cuối ngăn cả clarify lẫn send; capability question được trả lời trực tiếp."
+      }
+    }
+  ]
 }

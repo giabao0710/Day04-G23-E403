@@ -1,0 +1,583 @@
+KIẾN THỨC CẦN CÓ CHO DỰ ÁN RESEARCH AGENT TOOL EVAL
+===================================================
+
+1. KIẾN THỨC PYTHON NỀN TẢNG
+----------------------------
+
+1.1. Cấu trúc chương trình
+
+Cần hiểu:
+
+- module/package và __init__.py;
+- import tương đối như from .lookup.tool import web_search;
+- function, class, dataclass và Protocol;
+- type hints: list, dict, Any, str | None;
+- exception handling với try/except;
+- biến toàn cục và phạm vi biến;
+- xử lý command-line arguments bằng argparse.
+
+Ứng dụng trong bài:
+
+- providers/ là một package adapter;
+- tools/ là package registry + implementations;
+- AgentRun, ToolCall, ModelResponse là dataclass;
+- Provider là Protocol;
+- run_eval.py và chat.py nhận tham số từ command line.
+
+1.2. Làm việc với file và đường dẫn
+
+Cần biết pathlib.Path:
+
+- read_text/write_text;
+- mkdir;
+- glob;
+- parent/stem/suffix;
+- resolve.
+
+Ứng dụng:
+
+- đọc prompt/YAML/JSON;
+- tạo runs/, transcripts/, analysis/;
+- lưu PDF/text arXiv;
+- tạo artifact hashes từ file.
+
+1.3. Virtual environment và dependency
+
+Cần hiểu:
+
+- mục đích của .venv;
+- pip install -r requirements.txt;
+- khác biệt giữa Python hệ thống và Python trong .venv;
+- dependency bắt buộc và optional;
+- cách kiểm tra import/package.
+
+Không đưa .venv hoặc __pycache__ vào bài nộp.
+
+
+2. BIẾN MÔI TRƯỜNG VÀ QUẢN LÝ SECRET
+-------------------------------------
+
+Cần biết:
+
+- API key là credential, không phải dữ liệu cấu hình công khai;
+- .env chỉ dùng local;
+- .env.example chỉ chứa tên biến;
+- os.getenv đọc biến môi trường;
+- Git ignore không thay thế việc giữ bí mật cẩn thận;
+- key đã lộ phải được rotate.
+
+Các nhóm key:
+
+- model: OPENROUTER_API_KEY, OPENAI_API_KEY,
+  ANTHROPIC_API_KEY, GEMINI_API_KEY;
+- web/tool: TAVILY_API_KEY, FIRECRAWL_API_KEY,
+  RAPIDAPI_KEY;
+- action: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+
+Không đưa secret vào:
+
+- source code;
+- command được chia sẻ;
+- prompt;
+- run/transcript;
+- screenshot;
+- report;
+- Git commit.
+
+
+3. HTTP, REST API VÀ XỬ LÝ RESPONSE
+-----------------------------------
+
+Cần hiểu:
+
+- GET và POST;
+- endpoint;
+- headers;
+- query params;
+- JSON body;
+- bearer token;
+- HTTP status code;
+- timeout;
+- raise_for_status;
+- response.json;
+- retry và rate limit.
+
+Ứng dụng:
+
+- Tavily: POST search;
+- Firecrawl: POST scrape;
+- RapidAPI: GET timeline/search với x-rapidapi headers;
+- Telegram: POST sendMessage;
+- arXiv: GET Atom API/PDF.
+
+Cần phân biệt:
+
+- provider error: model API không trả được tool call;
+- tool error: model chọn tool xong nhưng API tool bị lỗi;
+- routing error: model chọn sai tool;
+- argument error: đúng tool nhưng sai tham số.
+
+
+4. RATE LIMIT, QUOTA VÀ ĐỘ BỀN VẬN HÀNH
+---------------------------------------
+
+Cần biết:
+
+- RPM: requests per minute;
+- RPD: requests per day;
+- 429 RESOURCE_EXHAUSTED;
+- retry-after/retry delay;
+- quota có thể tách theo provider/model/project;
+- gọi preflight/eval/smoke test đều có thể tiêu quota.
+
+Ứng dụng:
+
+- run_eval.py có --case-delay;
+- arXiv tool tự chờ tối thiểu khoảng 3 giây;
+- run có provider errors không dùng làm metric chính;
+- không chạy v0/v1/v2/v3 liên tục nếu chưa đọc evidence.
+
+
+5. LLM PROVIDER VÀ ADAPTER PATTERN
+----------------------------------
+
+Cần hiểu:
+
+- mỗi hãng có request/response schema khác nhau;
+- adapter chuyển schema riêng sang contract chung;
+- dependency inversion: agent phụ thuộc Provider contract, không phụ thuộc hãng;
+- factory pattern: make_provider(name).
+
+Provider resolution trong dự án:
+
+- ưu tiên provider người dùng yêu cầu nếu API key tương ứng tồn tại;
+- nếu thiếu key, fallback theo thứ tự gemini → openai → anthropic → openrouter;
+- ghi cả requested_provider và provider thực tế vào artifact;
+- nếu không có key nào, dừng sớm với lỗi cấu hình;
+- fallback chỉ xử lý trường hợp thiếu key, không che lỗi key sai, hết quota hoặc
+  lỗi mạng của provider đã được chọn.
+
+Contract chung trong bài:
+
+- input: messages, tools, model, temperature, tool_choice;
+- output: ModelResponse;
+- ModelResponse gồm text và list ToolCall;
+- ToolCall gồm name và args.
+
+Điều này cho phép cùng run_eval/chat/UI chạy với OpenAI, OpenRouter, Anthropic
+hoặc Gemini.
+
+
+6. STRUCTURED TOOL CALLING
+--------------------------
+
+Đây là kiến thức trung tâm của bài.
+
+Cần hiểu:
+
+- model không tự thực thi Python;
+- model chỉ quyết định tool name và arguments;
+- Python registry mới thực thi hàm thật;
+- kết quả tool phải được đưa lại cho model nếu muốn agent tiếp tục suy luận;
+- tool_choice="required" ép model tạo tool call cho case có expected tool;
+- no_tool case không nên bị ép gọi tool.
+
+Một tool hoàn chỉnh cần bốn phần:
+
+1. tools/<name>/TOOL.md;
+2. tools/<name>/tool.py;
+3. key trong tools.TOOL_FUNCTIONS;
+4. declaration trong artifacts/tools.yaml.
+
+
+7. JSON SCHEMA VÀ THIẾT KẾ TOOL DECLARATION
+-------------------------------------------
+
+Cần biết:
+
+- type: object/string/integer/boolean/array;
+- properties;
+- required;
+- enum;
+- default;
+- minimum;
+- nested items.
+
+Tool schema tốt phải nói rõ:
+
+- tool giải quyết intent nào;
+- khi nào không dùng;
+- argument nào bắt buộc;
+- format argument;
+- default quan trọng;
+- side effect/confirmation boundary.
+
+Ví dụ:
+
+- timeline cần screenname không có ký tự @;
+- social_search dùng query chủ đề;
+- lookup phân biệt general/news và timeframe;
+- send không được confirmed=true nếu user chưa xác nhận;
+- source_audit chỉ nhận items đã thu thập, không tự search.
+
+
+8. PROMPT ENGINEERING CHO TOOL ROUTING
+--------------------------------------
+
+Cần hiểu rằng routing chịu tác động bởi cả:
+
+- system prompt;
+- tên tool;
+- description;
+- argument schema;
+- conversation history;
+- số lượng optional tool đang được expose.
+
+Kỹ thuật cần có:
+
+- mô tả intent rõ và không chồng lấn;
+- quy định missing-information boundary;
+- quy định action-confirmation boundary;
+- giữ nguyên entity/query/limit/timeframe người dùng đã nêu;
+- ưu tiên latest turn trong multi-turn;
+- hỗ trợ correction và switch tool;
+- nêu rõ khi có thể gọi nhiều tool;
+- nêu rõ no_tool/out-of-scope behavior.
+
+Không nên:
+
+- hard-code câu trả lời của từng eval case;
+- sửa fixed test để model PASS;
+- thay nhiều giả thuyết cùng lúc rồi không biết yếu tố nào tạo cải thiện.
+
+
+9. AGENT LOOP VÀ QUẢN LÝ TRẠNG THÁI
+------------------------------------
+
+Cần hiểu vòng lặp:
+
+Model response
+→ tool calls
+→ tool execution
+→ tool results message
+→ model response tiếp theo.
+
+Cần quản lý:
+
+- max tool rounds để tránh loop vô hạn;
+- history window để context không tăng mãi;
+- trạng thái answered;
+- waiting_for_user;
+- max_tool_rounds;
+- provider_error;
+- transcript của từng turn.
+
+Tool clarify đặc biệt vì nó không lấy dữ liệu; nó trả awaiting_user=true để dừng
+và chờ input mới.
+
+
+10. MULTI-TURN CONVERSATION
+---------------------------
+
+Cần hiểu:
+
+- previous turns là context;
+- latest user turn là yêu cầu hiện tại cần chấm;
+- thông tin có thể carry over;
+- user có thể sửa entity/limit/tool;
+- correction mới phải ghi đè dữ liệu cũ;
+- không gọi tool cho từng earlier turn trong eval.
+
+Các lỗi phổ biến:
+
+- giữ entity cũ sau khi user sửa;
+- quên timeframe cũ;
+- tự hỏi lại dù context đã đủ;
+- xử lý lại request cũ thay vì latest request;
+- không chuyển tool khi user nói bỏ Twitter/chuyển web.
+
+
+11. THIẾT KẾ EVALUATION
+------------------------
+
+Cần biết cấu trúc case:
+
+- id;
+- phase;
+- query hoặc turns;
+- failure_type;
+- expect;
+- metadata.what_it_tests.
+
+Các failure_type:
+
+- wrong_tool;
+- wrong_arg_value;
+- wrong_boundary;
+- unnecessary_tool;
+- out_of_scope;
+- missing_info.
+
+Các kiểu expected:
+
+- tool_calls: tên tool và subset arguments;
+- no_tool: không được gọi tool.
+
+Fixed eval đo khả năng tổng quát. Team eval phải đo lỗi/khả năng mà nhóm quan tâm,
+không được chỉ viết các case quá dễ để tăng điểm.
+
+
+12. GRADING VÀ CÁC METRIC
+-------------------------
+
+12.1. case_accuracy
+
+Số case PASS / số case đo được.
+
+12.2. tool_routing_accuracy
+
+Tỷ lệ case có đúng tập tool cần gọi, không thiếu và không thừa.
+
+12.3. argument_accuracy
+
+Tỷ lệ case có arguments expected chính xác.
+
+12.4. multiturn_accuracy
+
+Tỷ lệ multi-turn case PASS.
+
+12.5. provider_error_cases và measured_cases
+
+Metric chỉ đáng tin khi:
+
+- provider_error_cases = 0;
+- measured_cases = total_cases.
+
+Nếu chỉ 1/20 case đo được thì case_accuracy=1.0 không có nghĩa hệ thống đạt 100%.
+
+12.6. Subset matching
+
+Grader chỉ so những argument có trong expect. Model có thể thêm field không bị
+chấm nếu field đó không làm xuất hiện extra tool call, nhưng không được đổi giá
+trị expected.
+
+
+13. EVIDENCE-DRIVEN DEVELOPMENT
+-------------------------------
+
+Quy trình đúng:
+
+1. chạy baseline;
+2. mở run JSON;
+3. đọc actual_tool_calls;
+4. đọc failures;
+5. đọc observed_mismatch;
+6. kiểm tra tool_results/error;
+7. đặt một giả thuyết;
+8. sửa prompt hoặc tool declaration;
+9. chạy version mới;
+10. so trước/sau;
+11. ghi version log.
+
+Cần phân biệt:
+
+- correlation: metric thay đổi sau khi sửa;
+- causal confidence: chỉ cao hơn khi mỗi vòng thay đổi một giả thuyết;
+- regression: sửa case này nhưng làm hỏng case khác;
+- partial support: một phần mục tiêu được sửa nhưng overall metric không tăng.
+
+Trong dự án hiện tại, v1 là ví dụ partial support:
+
+- routing tăng 0.80 → 0.85;
+- case accuracy giữ 0.65;
+- một số boundary case tốt hơn;
+- một số case khác regression.
+
+
+14. VERSIONING VÀ HASH
+----------------------
+
+Cần hiểu:
+
+- label v0/v1/v2/v3 không đủ chứng minh artifact khác nhau;
+- SHA-256 xác định nội dung prompt/tools;
+- artifact_version ghép version + prompt hash + tools hash;
+- mỗi version log phải trỏ đúng run file.
+
+Nếu hai run cùng version nhưng hash khác, đó là hai artifact khác nhau và cần
+giải thích rõ run nào là evidence chính.
+
+
+15. ĐỊNH DẠNG DỮ LIỆU
+----------------------
+
+15.1. JSON
+
+Dùng cho:
+
+- eval datasets;
+- run logs;
+- transcripts;
+- tool results.
+
+Cần biết object, array, boolean, null và encoding UTF-8.
+
+15.2. YAML
+
+Dùng cho tools.yaml và frontmatter policy/TOOL.md.
+
+Cần chú ý:
+
+- indentation;
+- dấu hai chấm;
+- string có ký tự đặc biệt;
+- enum/default/required.
+
+15.3. CSV
+
+Dùng cho version log và run analysis.
+
+Cần:
+
+- giữ đúng header;
+- quote field nếu có dấu phẩy;
+- không đổi thứ tự hoặc bỏ cột;
+- dùng UTF-8.
+
+15.4. Markdown
+
+Dùng cho prompt, TOOL.md, policy và report.
+
+Cần biết heading, bullet, table, link và frontmatter.
+
+
+16. INFORMATION RETRIEVAL VÀ CHẤT LƯỢNG NGUỒN
+----------------------------------------------
+
+Cần hiểu:
+
+- web search khác URL fetch;
+- social signal không đồng nghĩa fact;
+- arXiv chưa chắc đã peer reviewed;
+- primary source mạnh hơn bản tóm tắt;
+- một domain lặp lại nhiều lần không tạo source diversity;
+- URL phải đi kèm factual item;
+- nguồn mâu thuẫn phải được nêu rõ.
+
+source_audit đo:
+
+- số lượng source;
+- số domain độc lập;
+- URL bị thiếu.
+
+source_audit không đo:
+
+- claim đúng hay sai;
+- uy tín chuyên môn;
+- recency;
+- conflict giữa các nguồn.
+
+
+17. AN TOÀN, PRIVACY VÀ PROMPT INJECTION
+----------------------------------------
+
+Cần hiểu:
+
+- nội dung lấy từ web/policy là dữ liệu không tin cậy;
+- instruction nằm trong tài liệu không được trở thành system instruction;
+- tách facts khỏi instruction-like text;
+- không gửi dữ liệu mật tới external APIs;
+- write action cần explicit confirmation;
+- least privilege cho bot/channel;
+- transcript cũng có thể làm lộ secret.
+
+Policy tool trong dự án minh họa trust boundary bằng cách đưa các dòng đáng ngờ
+vào untrusted_text thay vì facts.
+
+
+18. STREAMLIT VÀ UI EVIDENCE
+----------------------------
+
+Cần biết:
+
+- st.session_state;
+- st.chat_input và st.chat_message;
+- sidebar/widget;
+- tabs/expander;
+- st.json và st.dataframe;
+- rerun;
+- quản lý transcript theo session.
+
+UI đạt yêu cầu khi thể hiện:
+
+- request/response;
+- tool trace;
+- arguments;
+- result/error;
+- round/status;
+- version/artifact;
+- run/transcript evidence.
+
+UI phải dùng cùng run_model_tool_loop, không viết agent logic khác với CLI/eval.
+
+
+19. GIT VÀ VỆ SINH BÀI NỘP
+--------------------------
+
+Cần biết:
+
+- git status;
+- tracked/untracked/ignored;
+- .gitignore;
+- diff;
+- commit có chủ đích.
+
+Không nộp:
+
+- .env;
+- API keys;
+- .venv;
+- __pycache__;
+- *.pyc;
+- file tải tạm không cần thiết;
+- secret trong log/screenshot.
+
+Cần nộp:
+
+- artifacts;
+- data/eval_group.json;
+- valid runs;
+- transcripts;
+- tool mới;
+- UI;
+- report;
+- analysis CSV nếu có.
+
+
+20. THỨ TỰ ƯU TIÊN HỌC
+-----------------------
+
+Mức bắt buộc trước khi làm:
+
+1. Python cơ bản + venv/pip;
+2. JSON/YAML;
+3. .env và secret;
+4. HTTP/API;
+5. structured tool calling;
+6. prompt/tool schema;
+7. đọc run JSON và metric.
+
+Mức cần để tối ưu tốt:
+
+8. multi-turn state;
+9. evaluation design;
+10. evidence-driven experimentation;
+11. provider abstraction;
+12. debugging quota/tool errors.
+
+Mức cần để demo/nộp:
+
+13. Streamlit;
+14. transcript/evidence presentation;
+15. report writing;
+16. Git hygiene và security review.

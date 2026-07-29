@@ -1,0 +1,821 @@
+TỔNG QUAN DỰ ÁN DAY 04 LAB V2 — RESEARCH AGENT TOOL EVAL
+========================================================
+
+1. MỤC TIÊU CỦA BÀI TẬP
+-----------------------
+
+Dự án xây dựng một research agent có khả năng:
+
+- nhận yêu cầu nghiên cứu bằng ngôn ngữ tự nhiên;
+- chọn đúng công cụ (tool) theo ý định của người dùng;
+- truyền đúng tham số cho tool;
+- thực thi tool thật hoặc tool cục bộ;
+- trả lời nhiều lượt, biết hỏi lại khi thiếu thông tin;
+- yêu cầu xác nhận trước hành động làm thay đổi hệ thống bên ngoài;
+- lưu đầy đủ tool call, kết quả, lỗi, phiên bản prompt và phiên bản tool;
+- dùng log thật để cải tiến prompt/tool declaration qua v0, v1, v2, v3;
+- trình bày request, response, trace và evidence trên giao diện.
+
+Trọng tâm của bài không phải là tạo chatbot “trả lời nghe hay”, mà là thực hành
+vòng lặp evidence-driven:
+
+Yêu cầu người dùng
+→ model chọn tool và arguments
+→ Python thực thi tool
+→ lưu run/transcript
+→ grader so với expected behavior
+→ đọc failure
+→ đặt giả thuyết
+→ sửa prompt hoặc tool declaration
+→ chạy phiên bản tiếp theo
+→ so sánh metric và ghi version log.
+
+
+2. KIẾN TRÚC VÀ LUỒNG DỮ LIỆU
+-----------------------------
+
+2.1. Luồng eval
+
+1. run_eval.py đọc:
+   - system prompt từ artifacts/system_prompt.md;
+   - tool declarations từ artifacts/tools.yaml;
+   - test case từ data/eval_*.json.
+2. providers/ tạo adapter tương ứng với OpenAI, OpenRouter, Anthropic hoặc Gemini.
+3. ResearchAgent trong agent.py gửi messages và tool schema cho model.
+4. Model trả text và structured tool calls.
+5. agent.py tìm implementation trong tools.TOOL_FUNCTIONS và thực thi tool thật.
+6. run_eval.py so actual tool calls với expect của test case:
+   - đúng/sai tên tool;
+   - đúng/sai arguments;
+   - tool thừa hoặc thiếu;
+   - có gọi tool khi expected no_tool hay không.
+7. Kết quả được tổng hợp thành metric và lưu vào runs/*.json.
+8. Người làm bài đọc run JSON, sửa một giả thuyết, chạy version mới và ghi
+   artifacts/version_log.csv.
+
+2.2. Luồng chat/UI
+
+1. chat.py hoặc app.py đọc cùng system prompt và tools.yaml như eval.
+2. run_model_tool_loop gọi model theo từng round.
+3. Nếu model gọi tool:
+   - tool được thực thi;
+   - kết quả tool được đưa lại vào context;
+   - model có thể gọi tool tiếp hoặc trả lời cuối.
+4. Nếu tool clarify trả awaiting_user=true, vòng lặp tạm dừng để chờ lượt user mới.
+5. Mỗi lượt lưu:
+   - câu hỏi;
+   - câu trả lời;
+   - từng round;
+   - tool name;
+   - arguments;
+   - result/error;
+   - artifact_version.
+6. app.py hiển thị lại toàn bộ dữ liệu này trên Streamlit.
+
+2.3. Ba lớp cần phân biệt
+
+- Tool declaration trong artifacts/tools.yaml:
+  giao diện model nhìn thấy, gồm tên, mô tả và JSON Schema của arguments.
+- Tool registry trong tools/__init__.py:
+  ánh xạ tên tool mà model gọi sang hàm Python thực.
+- Tool implementation trong tools/<tool_name>/tool.py:
+  mã thực sự gọi API, xử lý dữ liệu hoặc thực hiện logic cục bộ.
+
+Ba lớp trên phải đồng bộ tên. TOOL.md là tài liệu contract dành cho con người,
+không thay thế declaration trong tools.yaml.
+
+
+3. CÁC FILE Ở THƯ MỤC GỐC
+-------------------------
+
+3.1. README.md
+
+Tài liệu yêu cầu chính của bài:
+
+- mô tả mục tiêu evidence-driven;
+- quy định deliverable bắt buộc;
+- mô tả core/optional tools;
+- hướng dẫn chạy v0 đến v3;
+- quy định 10 team eval case;
+- yêu cầu UI, transcript, report và demo;
+- quy tắc không sửa fixed base eval;
+- checklist đồng bộ khi đổi tên tool;
+- điều kiện metric hợp lệ.
+
+Hai điều kiện quan trọng nhất khi đọc metric:
+
+- provider_error_cases phải bằng 0;
+- measured_cases phải bằng total_cases.
+
+Ngoài ra, tool_results có error vẫn phải review thủ công. Routing PASS không có
+nghĩa API của tool đã chạy thành công.
+
+3.2. TOOL-SETUP.md
+
+Tài liệu vận hành và bảo mật:
+
+- tạo virtual environment trên Windows/macOS/Linux;
+- cấu hình .env;
+- chọn model provider;
+- chạy provider preflight;
+- smoke-test Tavily, Firecrawl, RapidAPI, arXiv và Telegram;
+- phân biệt core gate với optional gate;
+- quy tắc an toàn cho action tool;
+- yêu cầu UI local và cách tạo public tunnel;
+- lưu ý quota, rate limit và secrets.
+
+README.md trả lời “bài phải làm gì”; TOOL-SETUP.md trả lời “chuẩn bị và kiểm tra
+môi trường như thế nào”.
+
+3.3. starter_v0/agent.py
+
+Chứa lớp ResearchAgent dùng trong eval:
+
+- AgentRun chuẩn hóa text, tool_calls và tool_results;
+- ResearchAgent nhận provider, system prompt, tools và model;
+- run() ghép system message với user messages;
+- gọi provider.complete(...);
+- tra tool trong TOOL_FUNCTIONS;
+- thực thi tool và giữ lỗi dưới dạng evidence thay vì làm toàn bộ eval dừng.
+
+Đây là agent loop một lượt dùng cho run_eval.py. Chat nhiều round dùng loop mở
+rộng trong chat.py.
+
+3.4. starter_v0/run_eval.py
+
+Runner và grader chính:
+
+- đọc dataset và chỉ lấy phase B;
+- kiểm tra failure_type có thuộc danh sách cho phép;
+- kiểm tra expected tool đã được khai báo và có implementation;
+- chuyển multi-turn case thành một message có previous context và latest turn;
+- dùng subset matching cho expected arguments;
+- phát hiện missing_tool_call, extra_tool_call và wrong_arg_value;
+- chấm no_tool case;
+- tính case_accuracy, tool_routing_accuracy, argument_accuracy,
+  multiturn_accuracy, failure_counts và observed_mismatch_counts;
+- lưu provider/model, prompt hash, tools hash, tool results và summary vào run JSON;
+- tự giãn 4,5 giây/case cho Gemini và retry có backoff tối đa 3 lần khi gặp
+  HTTP 429/rate limit;
+- chặn run nếu nhãn --version không khớp prompt/tools hash trong version_log.csv.
+
+Lưu ý: --suite là nhãn lưu vào run; file thực sự được chấm do --eval-cases quyết định.
+
+3.5. starter_v0/chat.py
+
+CLI chat nhiều round:
+
+- tái sử dụng cùng prompt và tool declarations với eval;
+- thực thi tối đa max_tool_rounds;
+- đưa TOOL_RESULTS_JSON trở lại cho model;
+- phát hiện clarify thông qua awaiting_user thay vì hard-code tên tool;
+- giới hạn history bằng history_window;
+- lưu transcript JSON sau mỗi turn;
+- ghi status answered, waiting_for_user, max_tool_rounds hoặc provider_error.
+
+Hàm run_model_tool_loop là contract quan trọng được app.py tái sử dụng để UI và
+CLI không tạo hai agent loop khác nhau.
+
+3.6. starter_v0/app.py
+
+Giao diện Streamlit do nhóm bổ sung:
+
+- chọn provider, model, version, history window và max tool rounds;
+- tự ưu tiên provider đã có API key;
+- với Gemini, gợi ý gemini-3.5-flash-lite;
+- hiển thị chat theo dạng user/assistant;
+- hiển thị trace theo round;
+- hiển thị arguments và result/error của từng tool;
+- hiển thị artifact version và transcript ID;
+- lưu transcript bằng write_transcript từ chat.py;
+- đọc runs/*.json để hiển thị bảng evidence;
+- đọc transcripts/*.transcript.json nếu có.
+
+UI không được chứa hoặc hiển thị giá trị API key.
+
+3.7. starter_v0/env_loader.py
+
+Trình nạp biến môi trường đơn giản:
+
+- đọc từng dòng KEY=VALUE từ .env;
+- bỏ dòng trống và comment;
+- hỗ trợ DAY04_ENV_FILE để trỏ tới file env bên ngoài;
+- mặc định nạp starter_v0/.env;
+- đọc file bằng UTF-8.
+
+3.8. starter_v0/versioning.py
+
+Tạo dấu vết phiên bản:
+
+- tính SHA-256 của system_prompt.md;
+- tính SHA-256 của tools.yaml;
+- tạo artifact_version dạng:
+  vN+p<prompt_hash_rút_gọn>+t<tools_hash_rút_gọn>;
+- giúp chứng minh mỗi run dùng đúng artifact nào.
+
+3.9. starter_v0/requirements.txt
+
+Khai báo dependency:
+
+- openai: OpenAI và OpenRouter adapter;
+- anthropic: Anthropic adapter;
+- google-genai: Gemini adapter;
+- requests: gọi API HTTP;
+- PyYAML: đọc tools.yaml và frontmatter/policy;
+- pypdf: trích nội dung PDF arXiv;
+- streamlit: UI.
+
+3.10. starter_v0/.env.example
+
+Mẫu tên biến môi trường, không chứa secret thật:
+
+- model provider: OPENROUTER_API_KEY, OPENAI_API_KEY,
+  ANTHROPIC_API_KEY, GEMINI_API_KEY;
+- research APIs: TAVILY_API_KEY, FIRECRAWL_API_KEY,
+  RAPIDAPI_KEY, RAPIDAPI_TWITTER_HOST;
+- arXiv: ARXIV_USER_AGENT;
+- Telegram: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+
+File .env thật bị Git ignore và không được đưa vào bài nộp.
+
+3.11. starter_v0/.gitignore
+
+Loại khỏi Git:
+
+- .venv và venv;
+- __pycache__, *.pyc;
+- .env và biến thể .env.*;
+- output tạm arxiv_papers;
+- file hệ điều hành như .DS_Store.
+
+
+4. PHÂN TÍCH THƯ MỤC artifacts/
+--------------------------------
+
+artifacts/ chứa “artifact điều khiển thí nghiệm” và bằng chứng trình bày.
+
+4.1. artifacts/system_prompt.md
+
+Instruction cấp hệ thống gửi cho model.
+
+Trạng thái hiện tại là prompt v1, tập trung vào boundary:
+
+- hỏi clarify(text) khi thiếu account/handle;
+- hỏi clarify(text) khi thiếu URL;
+- hỏi clarify(yes_no) trước khi send/post/publish;
+- chỉ send confirmed=true sau xác nhận rõ ở lượt sau;
+- giữ nguyên arguments người dùng đã nêu.
+
+Prompt này ảnh hưởng trực tiếp cách model định tuyến tool và cách xử lý thiếu
+thông tin/hành động nhạy cảm.
+
+4.2. artifacts/tools.yaml
+
+Danh sách tool mà model nhìn thấy. Mỗi declaration có:
+
+- name;
+- description;
+- JSON Schema;
+- properties;
+- enum/default/minimum;
+- required fields.
+
+Hiện có 11 tool:
+
+- 6 core: clarify, timeline, social_search, lookup, fetch, format;
+- 4 optional/built-in: send, policy, papers, paper_text;
+- 1 team tool: source_audit.
+
+Mô tả tool là một phần của prompt engineering. Tool implementation tốt nhưng
+description mơ hồ vẫn có thể làm model chọn sai.
+
+4.3. artifacts/version_log.csv
+
+Nhật ký thí nghiệm theo version:
+
+- version và author;
+- artifact đã thay đổi;
+- artifact_version;
+- full prompt_hash và tools_hash;
+- lý do thay đổi;
+- giả thuyết;
+- metric trước/sau;
+- run file làm evidence.
+
+Hiện đã có:
+
+- v0: baseline, case_accuracy = 0.65;
+- v1: thêm boundary prompt và source_audit,
+  tool_routing_accuracy tăng từ 0.80 lên 0.85.
+
+Case accuracy v1 vẫn là 0.65, nên cần ghi nhận rằng v1 cải thiện routing nhưng
+chưa cải thiện tổng số case PASS.
+
+4.4. artifacts/REPORT.md
+
+Template báo cáo nộp bài:
+
+- Phần A: giới thiệu agent, link dùng thử, danh sách tool, câu hỏi mẫu, demo scenario;
+- Phần B: evidence v0-v3, failure analysis, team eval, live chat, tool evidence,
+  reflection.
+
+REPORT.md hiện chủ yếu vẫn là template và cần được điền bằng run/transcript thật.
+
+
+5. PHÂN TÍCH THƯ MỤC company_policy/
+-------------------------------------
+
+Đây là knowledge base nội bộ giả lập. Model không đọc trực tiếp folder này.
+Model phải gọi tool policy; tools/policy/tool.py mới tìm nội dung phù hợp.
+
+5.1. company_policy/README.md
+
+Giải thích:
+
+- mục đích của policy KB;
+- các policy_area hợp lệ;
+- dùng policy tool cho quy định nội bộ;
+- dùng live tools cho tin tức, tweet, URL và paper hiện hành.
+
+5.2. ai-research-policy.md
+
+Quy định workflow nghiên cứu:
+
+- chọn nguồn hẹp và đáng tin nhất;
+- phân biệt web, social và arXiv;
+- yêu cầu xác minh;
+- giữ URL nguồn cho factual claim;
+- nêu xung đột giữa nguồn;
+- cấu trúc briefing/paper scan.
+
+5.3. data-privacy-policy.md
+
+Quy định dữ liệu và secrets:
+
+- không đưa customer data, token, tài chính chưa công bố hoặc PII vào tool ngoài;
+- phải redact dữ liệu nhạy cảm;
+- API key chỉ ở .env/secret manager;
+- không để key trong prompt, transcript, report, screenshot hoặc Git;
+- transcript nộp bài không được chứa secret/PII.
+
+5.4. external-publishing-policy.md
+
+Quy định hành động publish:
+
+- được soạn draft mà không cần approval;
+- đăng ra ngoài cần xác nhận rõ trong conversation hiện tại;
+- nội dung nhạy cảm cần human review;
+- Telegram phải có exact text và confirmation;
+- public claim phải có nguồn và không overclaim.
+
+5.5. source-citation-policy.md
+
+Phân tầng nguồn:
+
+- Tier 1: nguồn gốc/official/paper/dataset/filing;
+- Tier 2: báo chí uy tín có dẫn nguồn;
+- Tier 3: social/forum/anonymous/screenshot, chỉ là tín hiệu.
+
+File còn quy định citation arXiv, URL cho từng factual item và cách gắn nhãn
+evidence yếu. Phần “Injection probe” cố tình chứa câu dạng instruction độc hại
+để kiểm tra trust boundary của policy tool.
+
+5.6. tool-usage-policy.md
+
+Quy định:
+
+- tool nào dùng cho intent nào;
+- arXiv cần cách request ít nhất khoảng 3 giây;
+- không che provider errors;
+- mọi write action cần confirmation;
+- thiếu confirmation thì dùng clarify yes/no.
+
+
+6. PHÂN TÍCH THƯ MỤC data/
+--------------------------
+
+6.1. data/eval_base.json
+
+Fixed base eval, không được sửa nội dung để làm tăng điểm.
+
+Gồm 20 case:
+
+- R01-R14: 14 single-turn;
+- M01-M06: 6 multi-turn.
+
+Nhóm kỹ năng được đo:
+
+- phân biệt timeline và social_search;
+- web news và URL fetch;
+- limit, timeframe, search_type;
+- no_tool/out_of_scope;
+- hỏi lại khi thiếu handle/URL;
+- xác nhận trước send;
+- gọi nhiều tool trong cùng request;
+- carryover và correction trong multi-turn;
+- đổi tool theo ý định mới nhất.
+
+Expected arguments được chấm theo subset: grader chỉ bắt buộc các field có trong
+expect, nhưng nếu model thay đổi giá trị đó thì vẫn FAIL.
+
+6.2. data/eval_group.json
+
+Template team eval. Hiện cases đang trống.
+
+Yêu cầu hoàn thành:
+
+- đúng 10 case;
+- 5 single-turn dùng query;
+- 5 multi-turn dùng turns;
+- phase luôn là B;
+- failure_type thuộc danh sách cho phép;
+- có expect.tool_calls hoặc expect.no_tool;
+- có metadata.what_it_tests.
+
+Đây phải là case do nhóm tự thiết kế, không sao chép hai sample case.
+
+6.3. data/eval_research_extension.json
+
+10 case optional cho capability mở rộng:
+
+- company policy;
+- data privacy;
+- Telegram approval policy;
+- tìm arXiv;
+- đọc PDF arXiv;
+- kết hợp live news + policy;
+- kết hợp paper + citation policy;
+- đọc URL + policy;
+- đọc song song hai URL.
+
+Extension không thay thế base/group suite và chỉ nên chạy nếu nhóm thực sự giữ
+và demo các optional tool.
+
+
+7. PHÂN TÍCH THƯ MỤC providers/
+-------------------------------
+
+Mục tiêu của provider layer là chuẩn hóa API khác nhau về cùng một contract:
+ModelResponse(text, tool_calls, raw).
+
+7.1. providers/base.py
+
+Định nghĩa:
+
+- ToolCall(name, args);
+- ModelResponse(text, tool_calls, raw);
+- Provider Protocol với complete(...).
+
+Nhờ contract này, agent/run_eval/chat không cần biết response gốc của từng hãng.
+
+7.2. providers/__init__.py
+
+Factory make_provider(name) tạo adapter tương ứng:
+
+- openai → OpenAIProvider;
+- openrouter → OpenRouterProvider;
+- anthropic → AnthropicProvider;
+- gemini → GeminiProvider.
+
+Nếu provider được yêu cầu chưa có API key, resolve_provider_name() tự chọn
+provider đã cấu hình theo thứ tự gemini → openai → anthropic → openrouter.
+Provider thực tế và trạng thái fallback được ghi riêng trong run/transcript để
+không làm sai lệch kết quả. Nếu không có key nào, chương trình dừng ngay với
+thông báo cấu hình rõ ràng thay vì sinh provider_error cho toàn bộ test suite.
+
+7.3. providers/openai_provider.py
+
+- dùng OpenAI Chat Completions;
+- đọc OPENAI_API_KEY;
+- gửi messages/tools/tool_choice;
+- parse JSON arguments;
+- chuẩn hóa response thành ModelResponse.
+
+7.4. providers/openrouter_provider.py
+
+- kế thừa OpenAIProvider;
+- đổi API key thành OPENROUTER_API_KEY;
+- đổi base URL sang OpenRouter;
+- model mặc định openai/gpt-4o-mini.
+
+7.5. providers/anthropic_provider.py
+
+- chuyển OpenAI-style tool schema sang Anthropic input_schema;
+- tách system message khỏi conversation;
+- map tool_choice="required" sang Anthropic;
+- đọc text block và tool_use block;
+- dùng ANTHROPIC_API_KEY.
+
+7.6. providers/gemini_provider.py
+
+- chuyển messages sang Gemini contents;
+- chuyển tools thành function_declarations;
+- đưa system prompt vào system_instruction;
+- đọc text và function_call từ candidate/response;
+- loại tool calls bị trùng;
+- dùng GEMINI_API_KEY;
+- model mặc định gemini-3.5-flash-lite.
+
+Các file __pycache__/*.pyc chỉ là cache do Python sinh ra, không phải source và
+không được nộp.
+
+
+8. PHÂN TÍCH THƯ MỤC tools/
+---------------------------
+
+8.1. tools/README.md
+
+Quy định cấu trúc mỗi tool:
+
+tools/<tool_name>/
+  TOOL.md
+  tool.py
+
+Frontmatter TOOL.md mô tả track, kind, provider, requires_env, inputs, outputs,
+side effect và confirmation requirement.
+
+8.2. tools/__init__.py
+
+Registry trung tâm:
+
+- import implementation;
+- TOOL_FUNCTIONS ánh xạ tên tool → hàm Python;
+- load_tool_declarations đọc tools.yaml;
+- to_openai_tools chuyển declaration sang function-tool schema chung.
+
+Nếu đổi tên tool, phải đồng bộ registry, tools.yaml, TOOL.md, eval và report.
+
+8.3. tools/_shared.py
+
+Hàm dùng chung:
+
+- ROOT và TIMEOUT;
+- err(): chuẩn hóa lỗi thành dict;
+- domain(): lấy domain từ URL;
+- fold_text(): lowercase và bỏ dấu;
+- terms(): tokenize, loại stopwords để phục vụ policy search.
+
+8.4. Core tools
+
+clarify
+- Loại: control, không side effect, không cần API key.
+- Trả question, response_type, options và awaiting_user=true.
+- Dùng khi thiếu thông tin hoặc cần confirmation.
+
+timeline
+- Loại: live API.
+- Dùng RapidAPI Twitter API45.
+- Lấy bài gần đây của một account theo screenname.
+- Chuẩn hóa tweet thành title, summary, URL, source, date, metrics.
+- Cần RAPIDAPI_KEY và RAPIDAPI_TWITTER_HOST.
+
+social_search
+- Loại: live API.
+- Tìm tweet theo query.
+- Hỗ trợ Latest/Top và limit.
+- Cũng cần RapidAPI Twitter API45.
+
+lookup
+- Loại: live API.
+- Dùng Tavily để tìm web.
+- Hỗ trợ general/news, day/week/month/year và max_results.
+- Chuẩn hóa kết quả thành title, URL, domain, summary, score.
+- Cần TAVILY_API_KEY.
+
+fetch
+- Loại: live API.
+- Dùng Firecrawl scrape một URL cụ thể.
+- Lấy markdown và metadata, trả về item chuẩn hóa.
+- Cần FIRECRAWL_API_KEY.
+
+format
+- Loại: local formatter.
+- Không gọi API.
+- Biến items đã có thành brief, sections, bullets, thread hoặc daily_ai_vn.
+- Không dùng để tìm dữ liệu mới.
+
+8.5. Optional/built-in tools
+
+send
+- Action tool có side effect.
+- confirmed=false chỉ trả needs_confirmation.
+- confirmed=true mới gọi Telegram Bot API.
+- Cần TELEGRAM_BOT_TOKEN và TELEGRAM_CHAT_ID.
+- Trong base eval phải để Telegram credentials unset.
+
+policy
+- Local knowledge search trên company_policy/*.md.
+- Parse YAML frontmatter và markdown sections.
+- Tính điểm theo term overlap.
+- Tách instruction-like/untrusted text khỏi facts.
+- Trả source, effective_date, trust_boundary và untrusted_text.
+
+papers
+- Tìm paper bằng official arXiv Atom API.
+- Chuẩn hóa title, abstract, authors, date, URL, PDF URL, category.
+- Tự chờ tối thiểu khoảng 3 giây giữa request và retry 429.
+
+paper_text
+- Tải PDF arXiv;
+- trích text bằng pypdf;
+- giới hạn số trang và số ký tự;
+- ghi .pdf và .txt vào arxiv_papers/;
+- có side effect cục bộ nhưng không thay đổi hệ thống bên ngoài.
+
+8.6. Team tool: source_audit
+
+Tool mới do nhóm thêm:
+
+- không gọi API;
+- nhận danh sách source items đã thu thập;
+- kiểm tra số nguồn tối thiểu;
+- đếm unique domains;
+- tìm item thiếu URL;
+- trả sufficient hoặc needs_more_sources;
+- đưa ra recommendation.
+
+Giới hạn quan trọng: source_audit chỉ kiểm tra coverage/domain diversity, không
+xác minh một claim đúng hay sai và không thay thế lookup/fetch.
+
+
+9. PHÂN TÍCH THƯ MỤC scripts/
+-----------------------------
+
+9.1. scripts/preflight_provider.py
+
+Smoke-test model provider:
+
+- nạp .env;
+- tạo provider;
+- đọc tools.yaml;
+- gửi một câu cần timeline;
+- yêu cầu model trả structured tool call;
+- in provider, model, tool và args.
+
+Preflight không kiểm tra API của Tavily/Firecrawl/RapidAPI/arXiv/Telegram.
+
+9.2. scripts/parse_runs.py
+
+Chuyển run JSON thành CSV phẳng:
+
+- một dòng cho mỗi case;
+- giữ version, artifact, case ID, expected/actual tool;
+- giữ passed, routing_correct, args_correct và failures;
+- hữu ích để lọc/sort/phân tích trong Excel hoặc pandas.
+
+Cache Python trong scripts/__pycache__ không có ý nghĩa nghiệp vụ.
+
+
+10. PHÂN TÍCH THƯ MỤC samples/
+------------------------------
+
+samples chỉ là mock format, không phải evidence thật.
+
+10.1. samples/README.md
+
+Nhắc rõ sample chỉ dùng để hiểu schema và không được nộp như kết quả thật.
+
+10.2. samples/eval_group.schema.example.json
+
+Hai ví dụ:
+
+- một single-turn tool call;
+- một multi-turn no_tool.
+
+Hai case này không được tính vào 10 team cases.
+
+10.3. samples/version_log.example.csv
+
+Ví dụ cách ghi v0/v1/v2, hash, hypothesis, metric và run file.
+
+10.4. samples/run-analysis.csv
+
+Ví dụ output của parse_runs.py cho:
+
+- case PASS;
+- sai routing;
+- sai argument.
+
+10.5. samples/transcripts/example_*.transcript.json
+
+Ví dụ cấu trúc transcript:
+
+- session metadata;
+- artifact hashes;
+- turns;
+- rounds;
+- tool calls/results;
+- waiting_for_user;
+- answered.
+
+
+11. PHÂN TÍCH THƯ MỤC runs/
+---------------------------
+
+runs/ là evidence thật do run_eval.py sinh ra. Mỗi file lưu:
+
+- run_id, version, provider, model;
+- dataset/suite;
+- artifact_version, prompt_hash, tools_hash;
+- summary metrics;
+- input/expect của từng case;
+- actual tool calls;
+- tool execution results;
+- failures và observed mismatch.
+
+Hiện có sáu run thật; v2/v3 mới ở trạng thái artifact đã chuẩn bị:
+
+1. v0_B_base_gemini_20260729T103752425991.json
+   - model gemini-3.5-flash;
+   - chỉ 6/20 case đo được;
+   - 14 provider errors;
+   - không hợp lệ để report metric chính.
+
+2. v0_B_base_gemini_20260729T104356164341.json
+   - model gemini-3.5-flash;
+   - chỉ 1/20 case đo được;
+   - 19 provider errors;
+   - không hợp lệ để report metric chính.
+
+3. v0_B_base_gemini_20260729T105415154940.json
+   - model gemini-3.5-flash-lite;
+   - 20/20 measured;
+   - 0 provider error;
+   - case accuracy 0.65;
+   - routing 0.80;
+   - argument accuracy 0.65;
+   - multiturn accuracy 0.6667;
+   - đây là baseline v0 hợp lệ.
+
+4. v1_B_base_gemini_20260729T110238928687.json
+   - model gemini-3.5-flash-lite;
+   - 20/20 measured;
+   - 0 provider error;
+   - case accuracy 0.65;
+   - routing 0.85;
+   - argument accuracy 0.65;
+   - multiturn accuracy 0.50;
+   - v1 tăng routing nhưng chưa tăng overall accuracy.
+
+5. v0_B_base_openrouter_20260729T110924921980.json
+   - thiếu OPENROUTER_API_KEY;
+   - 0/20 case đo được, 20 provider errors;
+   - không hợp lệ để đánh giá và không được dùng làm baseline.
+
+6. v0_B_base_gemini_20260729T113257415431.json
+   - thực tế dùng artifact prompt/tools của v3 nhưng bị gắn nhãn v0;
+   - 15/20 case đo được, 5 provider errors;
+   - cả 5 lỗi là Gemini HTTP 429 do vượt giới hạn 15 request/phút;
+   - không hợp lệ để report metric và cần chạy lại với --version v3.
+
+Lỗi còn lại ở v1 tập trung vào:
+
+- model tự mở rộng query thay vì giữ keyword gốc;
+- thiếu parallel social_search;
+- thiếu/không chuẩn response_type khi clarify;
+- hỏi lại thừa trong một số case có đủ account;
+- carryover/switch tool trong multi-turn.
+
+Artifacts tối ưu đã chuẩn bị:
+
+- artifacts/versions/v1/ khóa đúng prompt/tools của run v1;
+- v2 dùng prompt artifacts/versions/v2/system_prompt.md và tools v1, tập trung
+  argument fidelity cùng correction precedence;
+- v3 dùng artifacts/system_prompt.md và artifacts/tools.yaml hiện tại, giữ prompt
+  v2 nhưng làm rõ routing trong tool declarations;
+- version_log.csv có hash/hypothesis v2/v3, còn metric và run filename được để
+  trống có chủ đích cho tới khi có run thật.
+
+data/eval_group.json hiện có đúng 10 case do nhóm thiết kế: 5 single-turn và 5
+multi-turn. scripts/validate_steps_3_4.py kiểm tra offline số lượng, schema, tool
+availability và ba tổ hợp artifact khác nhau.
+
+
+12. TRẠNG THÁI HIỆN TẠI VÀ PHẦN CÒN THIẾU
+------------------------------------------
+
+Đã có:
+
+- môi trường và dependency;
+- Gemini provider và Tavily;
+- UI Streamlit;
+- valid v0;
+- valid v1;
+- version log v0/v1;
+- team tool source_audit và smoke-test trước đó;
+- run evidence v0/v1.
+
+Còn thiếu hoặc chưa hoàn thiện:
+
+- FIRECRAWL_API_KEY cho fetch;
+- RAPIDAPI_KEY cho timeline/social_search;
+- run evidence thật cho v2 và v3;
+- group eval run;
+- live transcripts thật;
+- REPORT.md Phần A và B;
+- demo scenarios/fallback evidence;
+- optional extension chỉ khi nhóm muốn sử dụng;
+- public demo URL nếu người khác cần truy cập từ máy khác.
+
+Kết luận: dự án đã có kiến trúc agent, UI, v0/v1 và tool mới; phần tiếp theo nên
+tập trung vào core API gate, v2/v3 evidence-driven, team eval, transcript và report.

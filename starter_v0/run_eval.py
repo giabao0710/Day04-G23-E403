@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,31 @@ ALLOWED_CASE_FAILURE_TYPES = {
     "out_of_scope",
     "missing_info",
 }
+RATE_LIMIT_MARKERS = ("429", "resource_exhausted", "rate limit", "quota exceeded")
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in RATE_LIMIT_MARKERS)
+
+
+def retry_delay_seconds(exc: Exception, fallback: float) -> float:
+    text = str(exc)
+    matches = re.findall(r"(?:retryDelay['\": ]+|retry in )(\d+(?:\.\d+)?)s", text, re.IGNORECASE)
+    return max(float(matches[-1]) if matches else 0.0, fallback)
+
+
+def validate_logged_artifact(version: str, prompt_hash: str, tools_hash: str) -> None:
+    path = ARTIFACTS_DIR / "version_log.csv"
+    if not path.exists():
+        return
+    with path.open(encoding="utf-8", newline="") as file:
+        row = next((item for item in csv.DictReader(file) if item["version"] == version), None)
+    if row and (row["prompt_hash"], row["tools_hash"]) != (prompt_hash, tools_hash):
+        raise SystemExit(
+            f"Artifact/version mismatch for {version}: current hashes do not match version_log.csv. "
+            "Use the correct --version or its versioned --system-prompt/--tools paths."
+        )
 
 
 def load_cases(path: Path, phase: str) -> list[dict[str, Any]]:
@@ -270,12 +297,34 @@ def main() -> None:
     parser.add_argument("--tools", type=Path, default=ARTIFACTS_DIR / "tools.yaml")
     parser.add_argument("--eval-cases", type=Path, default=DATA_DIR / "eval_base.json")
     parser.add_argument("--runs-dir", type=Path, default=ROOT / "runs")
+    parser.add_argument("--case-delay", type=float, default=None, help="Seconds between cases. Default: 4.5 for Gemini, 0 otherwise.")
+    parser.add_argument("--max-provider-retries", type=int, default=3, help="Retries per case for HTTP 429/rate-limit errors.")
+    parser.add_argument("--retry-base-delay", type=float, default=6.0, help="Initial seconds before retrying a rate-limited case.")
     args = parser.parse_args()
+    if args.case_delay is not None and args.case_delay < 0:
+        parser.error("--case-delay must be >= 0")
+    if args.max_provider_retries < 0:
+        parser.error("--max-provider-retries must be >= 0")
+    if args.retry_base_delay < 0:
+        parser.error("--retry-base-delay must be >= 0")
 
     system_prompt = args.system_prompt.read_text(encoding="utf-8")
     artifact_version = build_artifact_version(args.version, args.system_prompt, args.tools)
+    validate_logged_artifact(args.version, artifact_version.prompt_hash, artifact_version.tools_hash)
     provider = make_provider(args.provider)
-    selected_model = args.model or getattr(provider, "default_model", None)
+    actual_provider = provider.provider_name
+    used_fallback = provider.used_fallback
+    model_override = None if used_fallback else args.model
+    selected_model = model_override or getattr(provider, "default_model", None)
+    case_delay = args.case_delay if args.case_delay is not None else (4.5 if actual_provider == "gemini" else 0.0)
+    if used_fallback:
+        print(
+            f"WARNING: {args.provider} is not configured; using {actual_provider} "
+            f"with model {selected_model}.",
+            flush=True,
+        )
+        if args.model:
+            print(f"WARNING: Ignoring provider-specific model override {args.model!r}.", flush=True)
     dataset_info = load_dataset_info(args.eval_cases)
     cases = load_cases(args.eval_cases, args.phase)
     if not cases:
@@ -286,12 +335,29 @@ def main() -> None:
     openai_tools = to_openai_tools(tool_declarations)
 
     results: list[dict[str, Any]] = []
-    for case in cases:
+    for index, case in enumerate(cases):
+        if index and case_delay > 0:
+            time.sleep(case_delay)
         print(f"Running {case['id']}...", flush=True)
-        agent = ResearchAgent(provider, system_prompt=system_prompt, tools=openai_tools, model=args.model)
+        agent = ResearchAgent(provider, system_prompt=system_prompt, tools=openai_tools, model=model_override)
+        provider_retries = 0
         try:
             tool_choice = None if case["expect"].get("no_tool") else "required"
-            run = agent.run(case_messages(case), tool_choice=tool_choice)
+            for attempt in range(args.max_provider_retries + 1):
+                try:
+                    run = agent.run(case_messages(case), tool_choice=tool_choice)
+                    break
+                except Exception as exc:
+                    if not is_rate_limit_error(exc) or attempt >= args.max_provider_retries:
+                        raise
+                    delay = retry_delay_seconds(exc, args.retry_base_delay * (2 ** attempt)) + 0.5
+                    provider_retries = attempt + 1
+                    print(
+                        f"Rate limited on {case['id']}; retry {attempt + 1}/"
+                        f"{args.max_provider_retries} in {delay:.1f}s...",
+                        flush=True,
+                    )
+                    time.sleep(delay)
             calls = [{"name": call.name, "args": call.args} for call in run.tool_calls]
             result = evaluate_phase_b(case, calls, run.text)
             tool_results = run.tool_results
@@ -320,6 +386,7 @@ def main() -> None:
             "expect": case["expect"],
             "result": result,
             "tool_results": tool_results,
+            "provider_retries": provider_retries,
         })
 
     summary = summarize(results)
@@ -331,7 +398,7 @@ def main() -> None:
         safe_slug(args.version),
         safe_slug(args.phase),
         safe_slug(args.suite),
-        safe_slug(args.provider),
+        safe_slug(actual_provider),
         timestamp,
     ])
     payload = {
@@ -340,8 +407,12 @@ def main() -> None:
         **artifact_version_dict(artifact_version),
         "phase": args.phase,
         "suite": args.suite,
-        "provider": args.provider,
+        "requested_provider": args.provider,
+        "provider": actual_provider,
+        "provider_fallback": used_fallback,
         "model": selected_model,
+        "case_delay_seconds": case_delay,
+        "max_provider_retries": args.max_provider_retries,
         "system_prompt": str(args.system_prompt),
         "tools": str(args.tools),
         "eval_cases": str(args.eval_cases),

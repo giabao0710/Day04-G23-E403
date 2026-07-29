@@ -165,20 +165,32 @@ def main() -> None:
     tool_declarations = load_tool_declarations(args.tools)
     openai_tools = to_openai_tools(tool_declarations)
     provider = make_provider(args.provider)
-    selected_model = args.model or getattr(provider, "default_model", None)
+    actual_provider = provider.provider_name
+    used_fallback = provider.used_fallback
+    model_override = None if used_fallback else args.model
+    selected_model = model_override or getattr(provider, "default_model", None)
     artifact_version = build_artifact_version(args.version, args.system_prompt, args.tools)
+    if used_fallback:
+        print(
+            f"WARNING: {args.provider} is not configured; using {actual_provider} "
+            f"with model {selected_model}."
+        )
+        if args.model:
+            print(f"WARNING: Ignoring provider-specific model override {args.model!r}.")
 
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     transcript_id = "_".join([
         safe_slug(args.version),
-        safe_slug(args.provider),
+        safe_slug(actual_provider),
         timestamp,
     ])
     transcript_path = args.transcripts_dir / f"{transcript_id}.transcript.json"
     transcript: dict[str, Any] = {
         "transcript_id": transcript_id,
         **artifact_version_dict(artifact_version),
-        "provider": args.provider,
+        "requested_provider": args.provider,
+        "provider": actual_provider,
+        "provider_fallback": used_fallback,
         "model": selected_model,
         "system_prompt": str(args.system_prompt),
         "tools": str(args.tools),
@@ -228,7 +240,7 @@ def main() -> None:
                 provider=provider,
                 messages=messages,
                 tools=openai_tools,
-                model=args.model,
+                model=model_override,
                 max_tool_rounds=args.max_tool_rounds,
             )
             turn_record.update(result)

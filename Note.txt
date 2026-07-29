@@ -1,0 +1,567 @@
+CÁC BƯỚC THỰC HIỆN DỰ ÁN RESEARCH AGENT TOOL EVAL
+=================================================
+
+Tài liệu này là trình tự thao tác đề xuất. Các lệnh bên dưới chỉ để tham khảo;
+người làm bài tự quyết định thời điểm chạy để quản lý quota và evidence.
+
+
+0. GHI NHẬN TRẠNG THÁI HIỆN TẠI
+--------------------------------
+
+Đã hoàn thành:
+
+- virtual environment và requirements;
+- Gemini provider preflight;
+- Tavily lookup;
+- UI Streamlit;
+- baseline v0 hợp lệ;
+- v1 hợp lệ;
+- artifacts/version_log.csv có v0 và v1;
+- tool mới source_audit;
+- run JSON v0/v1.
+
+Metric hợp lệ hiện có:
+
+- v0:
+  - 20/20 measured;
+  - 0 provider error;
+  - case accuracy 0.65;
+  - routing 0.80;
+  - argument accuracy 0.65;
+  - multiturn 0.6667.
+- v1:
+  - 20/20 measured;
+  - 0 provider error;
+  - case accuracy 0.65;
+  - routing 0.85;
+  - argument accuracy 0.65;
+  - multiturn 0.50.
+
+Chưa hoàn thành:
+
+- Firecrawl core gate;
+- RapidAPI Twitter core gate;
+- v2;
+- v3;
+- 10 team eval cases;
+- group run;
+- live transcripts thật;
+- REPORT.md;
+- demo/public URL nếu cần.
+
+Không dùng hai run v0 lỗi quota làm metric chính:
+
+- v0_B_base_gemini_20260729T103752425991.json;
+- v0_B_base_gemini_20260729T104356164341.json.
+
+Evidence v0/v1 chính:
+
+- runs/v0_B_base_gemini_20260729T105415154940.json;
+- runs/v1_B_base_gemini_20260729T110238928687.json.
+
+
+1. ĐỌC YÊU CẦU VÀ KHÓA PHẠM VI
+-------------------------------
+
+1. Đọc README.md.
+2. Đọc TOOL-SETUP.md.
+3. Xác định provider/model duy nhất dùng để so sánh các version.
+4. Ghi rõ core tools, optional tools và team tool.
+5. Không sửa data/eval_base.json để tăng điểm.
+6. Mỗi vòng v1/v2/v3 chỉ kiểm chứng một giả thuyết chính.
+7. Giữ Telegram credentials unset trong mọi base/group eval.
+8. Không đưa secrets vào source, report, transcript hoặc screenshot.
+
+
+2. CHUẨN BỊ MÔI TRƯỜNG WINDOWS
+-------------------------------
+
+Từ thư mục gốc dự án:
+
+cd starter_v0
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+
+Quy tắc:
+
+- không ghi đè .env nếu đã tồn tại;
+- không copy .env vào bài nộp;
+- kiểm tra terminal đang dùng Python trong .venv;
+- nếu dependency lỗi, xử lý trước khi gọi API.
+
+
+3. CẤU HÌNH .env
+-----------------
+
+Chọn một model provider:
+
+GEMINI_API_KEY=<key_của_bạn>
+
+Core tool APIs:
+
+TAVILY_API_KEY=<key_của_bạn>
+FIRECRAWL_API_KEY=<key_của_bạn>
+RAPIDAPI_KEY=<key_của_bạn>
+RAPIDAPI_TWITTER_HOST=twitter-api45.p.rapidapi.com
+
+Optional:
+
+ARXIV_USER_AGENT=AI20k-Day04-Research-Agent/1.0 (ten-nhom)
+
+Chỉ thêm Telegram khi thật sự demo live-send:
+
+TELEGRAM_BOT_TOKEN=<token>
+TELEGRAM_CHAT_ID=<chat_id>
+
+Không in giá trị key để kiểm tra. Chỉ kiểm tra biến đã có/không có.
+
+
+4. PREFLIGHT MODEL PROVIDER
+---------------------------
+
+Mục tiêu: xác nhận provider trả structured tool call.
+
+Với Gemini:
+
+python scripts/preflight_provider.py --provider gemini --model gemini-3.5-flash-lite
+
+PASS khi:
+
+- không có provider exception;
+- output có tool call;
+- tên tool/args có cấu trúc.
+
+Preflight không chứng minh Tavily/Firecrawl/RapidAPI chạy được.
+
+Nếu provider được chọn chưa có API key, CLI và UI tự dùng provider đã cấu hình
+theo thứ tự gemini → openai → anthropic → openrouter. Ví dụ, chọn openrouter
+nhưng chỉ có GEMINI_API_KEY thì chương trình cảnh báo và chạy Gemini. Khi fallback,
+không truyền --model dành riêng cho provider cũ; hãy để model mặc định của
+provider thực tế. Nếu không có key provider nào, chương trình dừng trước khi chạy
+toàn bộ test suite.
+
+
+5. SMOKE-TEST CORE TOOLS
+-------------------------
+
+5.1. Tavily lookup
+
+python -c "from pathlib import Path; from env_loader import load_lab_env; load_lab_env(Path.cwd()); from tools import TOOL_FUNCTIONS as T; r=T['lookup']('AI', max_results=1); items=r.get('items') or []; print({'error':r.get('error'), 'message':r.get('message'), 'item_count':len(items), 'first_title':items[0].get('title') if items else None})"
+
+5.2. Firecrawl fetch
+
+python -c "from pathlib import Path; from env_loader import load_lab_env; load_lab_env(Path.cwd()); from tools import TOOL_FUNCTIONS as T; r=T['fetch']('https://example.com'); items=r.get('items') or []; print({'error':r.get('error'), 'message':r.get('message'), 'item_count':len(items), 'first_title':items[0].get('title') if items else None})"
+
+5.3. RapidAPI timeline
+
+python -c "from pathlib import Path; from env_loader import load_lab_env; load_lab_env(Path.cwd()); from tools import TOOL_FUNCTIONS as T; r=T['timeline']('sama', limit=1); items=r.get('items') or []; print({'error':r.get('error'), 'message':r.get('message'), 'item_count':len(items), 'first_title':items[0].get('title') if items else None})"
+
+5.4. RapidAPI social_search
+
+python -c "from pathlib import Path; from env_loader import load_lab_env; load_lab_env(Path.cwd()); from tools import TOOL_FUNCTIONS as T; r=T['social_search']('OpenAI', limit=1); items=r.get('items') or []; print({'error':r.get('error'), 'message':r.get('message'), 'item_count':len(items), 'first_title':items[0].get('title') if items else None})"
+
+PASS của research tool cần:
+
+- error là None;
+- response đúng contract;
+- có item khi query dự kiến có kết quả.
+
+Nếu tool API chưa PASS, run eval vẫn có thể đo routing nhưng tool_results sẽ có
+error và phải ghi rõ trong report.
+
+
+6. XÁC NHẬN BASELINE v0
+------------------------
+
+Baseline chuẩn:
+
+python run_eval.py --provider gemini --model gemini-3.5-flash-lite --version v0 --suite base --eval-cases data/eval_base.json --case-delay 15
+
+run_eval tự dùng case-delay 4,5 giây cho Gemini và retry tối đa 3 lần nếu gặp
+HTTP 429. Giá trị 15 giây trong lệnh trên là cấu hình bảo thủ; có thể bỏ
+--case-delay để dùng mặc định tự động.
+
+Sau run, mở file mới trong runs/ và kiểm tra:
+
+- summary.total_cases;
+- summary.measured_cases;
+- summary.provider_error_cases;
+- summary.case_accuracy;
+- summary.tool_routing_accuracy;
+- summary.argument_accuracy;
+- summary.multiturn_accuracy;
+- results[*].result.failures;
+- results[*].result.observed_mismatch;
+- results[*].tool_results.
+
+Chỉ chọn run làm evidence chính khi:
+
+- measured_cases = total_cases;
+- provider_error_cases = 0.
+
+Baseline v0 hợp lệ hiện đã có, vì vậy không cần chạy lại nếu không có lý do rõ
+ràng hoặc quota không cho phép.
+
+
+7. PHÂN TÍCH FAILURE TRƯỚC MỖI VERSION
+--------------------------------------
+
+Với mỗi failed case:
+
+1. Đọc expected tool/args.
+2. Đọc actual_tool_calls.
+3. Đọc observed_mismatch.
+4. Đọc failures.
+5. Đọc tool_results/error.
+6. Phân loại nguyên nhân:
+   - prompt thiếu rule;
+   - tool description mơ hồ;
+   - schema thiếu convention;
+   - model tự mở rộng argument;
+   - multi-turn carryover sai;
+   - thiếu parallel tool call;
+   - provider/tool API error.
+7. Viết một hypothesis có thể đo.
+8. Chọn một metric mục tiêu.
+
+Không sửa nhiều nhóm lỗi cùng lúc nếu không cần thiết.
+
+
+8. v1 VÀ TOOL MỚI — ĐÃ THỰC HIỆN
+---------------------------------
+
+v1 hiện tại:
+
+- system_prompt.md thêm missing-info/action-consent boundary;
+- source_audit được thêm vào:
+  - tools/source_audit/TOOL.md;
+  - tools/source_audit/tool.py;
+  - tools/__init__.py;
+  - artifacts/tools.yaml.
+
+Smoke-test source_audit tham khảo:
+
+python -c "from tools import TOOL_FUNCTIONS as T; items=[{'title':'A','url':'https://example.com/a'},{'title':'B','url':'https://openai.com/b'}]; r=T['source_audit'](items,min_sources=2,min_domains=2); print(r)"
+
+Run v1:
+
+python run_eval.py --provider gemini --model gemini-3.5-flash-lite --version v1 --suite base --eval-cases data/eval_base.json --case-delay 15
+
+Kết luận v1:
+
+- routing tăng 0.80 → 0.85;
+- case accuracy không đổi 0.65;
+- hypothesis chỉ được hỗ trợ một phần;
+- có regression nên không được coi là tối ưu hoàn tất.
+
+
+9. VÒNG v2 — ĐÃ CHUẨN BỊ
+------------------------
+
+Hypothesis:
+
+“Nếu system prompt quy định giữ nguyên keyword/entity/limit/timeframe và ưu tiên
+correction mới nhất, model sẽ giảm lỗi tự mở rộng query, carryover sai và hỏi lại
+thông tin đã có.”
+
+Artifact v2:
+
+- prompt: artifacts/versions/v2/system_prompt.md;
+- tools: artifacts/versions/v1/tools.yaml;
+- v2 chỉ thay đổi prompt so với v1;
+- version_log.csv đã có hash và hypothesis; metric_after/run_file để trống đến
+  khi có run thật.
+
+Các case cần quan sát:
+
+- R03: phải giữ query="AI";
+- M02: phải giữ query="robotics";
+- M06: phải giữ query="OpenAI" và topic="news";
+- R05/M01: không clarify thừa khi account đã xuất hiện trong conversation.
+
+Chạy đúng artifact v2:
+
+python run_eval.py --provider gemini --version v2 --suite base --system-prompt artifacts/versions/v2/system_prompt.md --tools artifacts/versions/v1/tools.yaml --eval-cases data/eval_base.json --case-delay 15
+
+Sau run:
+
+- xác nhận 20/20 measured và 0 provider error;
+- so metric v1 → v2;
+- kiểm tra regression;
+- ghi một dòng v2 vào artifacts/version_log.csv;
+- ghi đúng artifact hash và run filename.
+
+
+10. VÒNG v3 — ĐÃ CHUẨN BỊ, CHỈ CHẠY SAU KHI ĐỌC v2
+---------------------------------------------------
+
+Hypothesis:
+
+“Nếu tool declarations phân biệt rõ bài đăng BY một account với bài đăng ABOUT
+một chủ đề, quy định query/timeframe và yêu cầu parallel channel, model sẽ tăng
+routing accuracy mà không đổi prompt v2.”
+
+Artifact v3 hiện là artifact chính:
+
+- artifacts/system_prompt.md giữ nguyên nội dung prompt v2;
+- artifacts/tools.yaml có descriptions/schema được làm rõ;
+- v3 chỉ thay đổi tools so với v2;
+- version_log.csv để trống metric_before/metric_after/run_file cho tới khi v2/v3
+  có evidence thật.
+
+Case quan sát:
+
+- R13: lookup + social_search;
+- extension E06/E07/E08/E09 nếu nhóm dùng;
+- multi-turn switch/correction còn lỗi sau v2.
+
+Sau khi review run v2, chạy:
+
+python run_eval.py --provider gemini --version v3 --suite base --eval-cases data/eval_base.json --case-delay 15
+
+Sau run:
+
+- xác nhận run hợp lệ;
+- so v2 → v3;
+- ghi version_log.csv;
+- chọn artifact v3 dùng cho group/chat/demo.
+
+Không chạy v3 bằng artifact giống hệt v2 chỉ để có tên version.
+
+
+11. TEAM EVAL — ĐÃ CÀI ĐẶT
+--------------------------
+
+data/eval_group.json hiện có đúng:
+
+- 5 case single-turn có query;
+- 5 case multi-turn có turns.
+
+Mỗi case đã có:
+
+- id duy nhất;
+- phase="B";
+- failure_type hợp lệ;
+- expect.tool_calls hoặc expect.no_tool=true;
+- metadata.what_it_tests.
+
+Coverage gồm source_audit, lookup, format, missing items, capability no-tool,
+topic/timeframe correction, template correction, audit threshold correction,
+clarify-then-fill và hủy external action. Không case nào chép nguyên sample.
+
+Kiểm tra offline, không gọi API:
+
+python scripts/validate_steps_3_4.py
+
+
+12. CHẠY GROUP EVAL
+--------------------
+
+Sau khi base v3 hợp lệ và eval_group.json đã khóa:
+
+python run_eval.py --provider gemini --model gemini-3.5-flash-lite --version v3 --suite group --eval-cases data/eval_group.json --case-delay 15
+
+Kiểm tra:
+
+- total_cases = 10;
+- measured_cases = 10;
+- provider_error_cases = 0;
+- đúng 5 single-turn và 5 multi-turn;
+- source_audit có declaration + implementation nếu được expected.
+
+Bộ group hiện chỉ có một lookup dùng Tavily; các case còn lại dùng local tool,
+clarify hoặc no-tool nên không phát sinh thêm API key riêng.
+
+
+13. OPTIONAL EXTENSION
+----------------------
+
+Chỉ chạy nếu nhóm muốn dùng policy/arXiv/PDF trong demo hoặc report:
+
+python run_eval.py --provider gemini --model gemini-3.5-flash-lite --version v3 --suite extension --eval-cases data/eval_research_extension.json --case-delay 15
+
+Trước khi chạy:
+
+- giữ declaration optional trong tools.yaml;
+- kiểm tra arXiv rate limit;
+- cài pypdf;
+- xác định Firecrawl có key nếu extension dùng fetch;
+- review local file writes trong arxiv_papers/.
+
+Extension không thay thế base/group.
+
+
+14. CHAT LIVE VÀ TRANSCRIPT
+----------------------------
+
+Chạy CLI:
+
+python chat.py --provider gemini --model gemini-3.5-flash-lite --version v3
+
+Rehearse ít nhất ba loại scenario:
+
+1. research bình thường;
+2. thiếu thông tin → clarify → user bổ sung;
+3. action nhạy cảm → yes/no confirmation.
+
+Nên thêm scenario source_audit:
+
+- tìm hoặc chuẩn bị danh sách sources;
+- yêu cầu kiểm tra coverage/domain diversity;
+- quan sát lookup/fetch và source_audit trong trace.
+
+Kiểm tra transcript:
+
+- không có secret;
+- có artifact_version;
+- có turns/rounds/tool_events;
+- có waiting_for_user khi clarify;
+- có result/error rõ ràng.
+
+
+15. KIỂM TRA UI
+----------------
+
+Chạy:
+
+streamlit run app.py
+
+Mở:
+
+http://localhost:8501
+
+Kiểm tra:
+
+- provider/model đúng;
+- chat input hoạt động;
+- request/response hiển thị;
+- tool trace có round/name/args/result/error;
+- artifact version và transcript ID hiển thị;
+- Run evidence có v0-v3;
+- không hiển thị API key;
+- conversation mới reset đúng session.
+
+
+16. PHÂN TÍCH RUN THÀNH CSV
+----------------------------
+
+Tùy chọn:
+
+python scripts/parse_runs.py runs/ --output analysis/base_runs.csv
+
+Dùng CSV để:
+
+- lọc failed cases;
+- so expected/actual tool;
+- nhóm lỗi theo observed_mismatch;
+- tìm regression giữa version;
+- lấy bảng đưa vào report.
+
+
+17. HOÀN THÀNH REPORT.md
+-------------------------
+
+17.1. Phần A
+
+Điền:
+
+- team/members/provider/model;
+- agent làm được gì;
+- link UI;
+- danh sách tool;
+- đánh dấu source_audit là team tool;
+- 3–5 câu hỏi mẫu;
+- 3–5 demo scenarios;
+- fallback run/transcript.
+
+17.2. Phần B
+
+Điền bằng evidence thật:
+
+- bảng v0-v3;
+- hypothesis và metric;
+- failure analysis;
+- 10 group cases;
+- live transcript evidence;
+- source_audit smoke-test evidence;
+- optional capability nếu thực sự dùng;
+- reflection và next step.
+
+Không ghi metric từ run có provider errors.
+
+
+18. CHUẨN BỊ DEMO/PUBLIC LINK
+------------------------------
+
+Nếu demo trên cùng máy:
+
+- localhost:8501 có thể đủ.
+
+Nếu người khác mở từ máy khác:
+
+cloudflared tunnel --url http://localhost:8501
+
+Sau khi có URL:
+
+- test bằng thiết bị khác;
+- không nhập dữ liệu nhạy cảm;
+- ghi URL vào REPORT.md Phần A;
+- chuẩn bị fallback nếu tunnel chết;
+- tắt tunnel sau demo.
+
+
+19. FINAL GATE TRƯỚC KHI NỘP
+-----------------------------
+
+Core:
+
+[ ] Provider preflight PASS.
+[ ] Tavily lookup PASS.
+[ ] Firecrawl fetch PASS hoặc ghi rõ chưa có key.
+[ ] RapidAPI timeline/social_search PASS hoặc ghi rõ chưa có key.
+[ ] source_audit smoke-test PASS.
+[ ] v0 hợp lệ.
+[ ] v1 hợp lệ.
+[ ] v2 hợp lệ.
+[ ] v3 hợp lệ.
+[ ] version_log.csv có v0-v3.
+[ ] eval_group.json đúng 10 case: 5 single + 5 multi.
+[ ] group run hợp lệ.
+[ ] UI chạy và có trace/evidence.
+[ ] Có live transcript thật.
+[ ] REPORT.md hoàn chỉnh.
+[ ] Có demo scenarios và fallback evidence.
+
+Security:
+
+[ ] Không có .env trong Git/bài nộp.
+[ ] Không có API key/token trong source.
+[ ] Không có secret/PII trong run/transcript/report.
+[ ] Không nộp .venv, __pycache__, *.pyc.
+[ ] Telegram chỉ gửi sau explicit confirmation.
+
+Consistency:
+
+[ ] Tên tool đồng bộ giữa tools.yaml, registry, TOOL.md, eval và report.
+[ ] Run file trỏ đúng artifact hash.
+[ ] Không sửa expected behavior của fixed base eval.
+[ ] Metric report chỉ lấy từ run đủ measured cases và 0 provider error.
+
+
+20. THỨ TỰ THỰC HIỆN NGẮN GỌN TỪ TRẠNG THÁI HIỆN TẠI
+------------------------------------------------------
+
+1. Bổ sung và smoke-test Firecrawl/RapidAPI.
+2. Đọc v1 failures.
+3. Sửa một hypothesis cho v2.
+4. Chạy v2, đọc evidence, ghi version log.
+5. Sửa một hypothesis mới cho v3.
+6. Chạy v3, đọc evidence, ghi version log.
+7. Viết đúng 10 group cases.
+8. Chạy group eval.
+9. Chat live và lưu transcripts.
+10. Kiểm tra UI/evidence.
+11. Điền REPORT.md.
+12. Rehearse demo, kiểm tra security và nộp bài.

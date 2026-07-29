@@ -168,6 +168,12 @@ python run_eval.py --provider openrouter --version v0 --suite base --eval-cases 
 
 Run JSON cũng lưu `artifact_version`, `prompt_hash`, `tools_hash`, actual tool calls, và actual tool results. Đó là evidence chính cho report.
 
+`run_eval.py` tự giãn 4,5 giây giữa các case khi provider thực tế là Gemini và
+retry tối đa 3 lần cho lỗi HTTP 429/rate limit. Có thể override bằng
+`--case-delay`, `--max-provider-retries` và `--retry-base-delay`; không đặt delay
+về 0 khi đang dùng Gemini free tier cho full base suite. Script cũng dừng sớm
+nếu `--version` không khớp prompt/tools hash đã ghi trong `version_log.csv`.
+
 Optional: parse run JSON into a flat CSV table for analysis:
 
 ```bash
@@ -194,13 +200,20 @@ Method, not memorized answers:
 
 ## Step 3 — Run 3 optimization versions
 
-Không chạy cả ba lệnh liên tiếp. Trước mỗi version, sửa một hypothesis rồi mới chạy đúng một lệnh:
+Không chạy cả ba lệnh liên tiếp. Trước mỗi version, sửa một hypothesis rồi mới chạy đúng một lệnh.
+
+Trong repo này, v1 đã có evidence thật. Các artifact được khóa để v2 và v3 không
+vô tình dùng cùng nội dung:
 
 ```bash
-python run_eval.py --provider openrouter --version v1 --suite base --eval-cases data/eval_base.json
-python run_eval.py --provider openrouter --version v2 --suite base --eval-cases data/eval_base.json
+python run_eval.py --provider openrouter --version v1 --suite base --system-prompt artifacts/versions/v1/system_prompt.md --tools artifacts/versions/v1/tools.yaml --eval-cases data/eval_base.json
+python run_eval.py --provider openrouter --version v2 --suite base --system-prompt artifacts/versions/v2/system_prompt.md --tools artifacts/versions/v1/tools.yaml --eval-cases data/eval_base.json
 python run_eval.py --provider openrouter --version v3 --suite base --eval-cases data/eval_base.json
 ```
+
+Chỉ cần chạy v1 lại khi muốn tái lập evidence. Luồng tiếp theo là chạy v2, đọc
+failure, rồi mới chạy v3. Có thể kiểm tra cấu trúc artifact/team eval mà không
+gọi API bằng `python scripts/validate_steps_3_4.py`.
 
 Sau mỗi run, fill `artifacts/version_log.csv`:
 
@@ -225,8 +238,10 @@ Mỗi case cần:
 - `expect`: `tool_calls` hoặc `no_tool`
 - `metadata.what_it_tests`
 
-File `data/eval_group.json` để trống có chủ đích vì phần team eval phải do chính nhóm tự thiết kế.
-Cả template trong `starter_v0/` và `solution/` đều trống; điều đó không thay đổi yêu cầu đúng 10 case. Xem [2 case mẫu về schema](starter_v0/samples/eval_group.schema.example.json) (không tính vào 10 case và không nộp thay case của team). Với multi-turn, phần tử cuối của `turns` phải là user turn đang được chấm.
+`data/eval_group.json` trong repo này đã được nhóm điền đúng 10 case: 5
+single-turn và 5 multi-turn. Xem [2 case mẫu về schema](starter_v0/samples/eval_group.schema.example.json)
+để đối chiếu (không tính vào 10 case và không nộp thay case của team). Với
+multi-turn, phần tử cuối của `turns` phải là user turn đang được chấm.
 
 Run:
 

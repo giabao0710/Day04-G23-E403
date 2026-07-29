@@ -24,17 +24,26 @@ def main() -> None:
     args = parser.parse_args()
 
     provider = make_provider(args.provider)
+    actual_provider = provider.provider_name
+    model_override = None if provider.used_fallback else args.model
+    selected_model = model_override or getattr(provider, "default_model", None)
+    if provider.used_fallback:
+        print(
+            f"WARNING requested_provider={args.provider} is not configured; "
+            f"using provider={actual_provider}."
+        )
+        if args.model:
+            print(f"WARNING ignoring provider-specific model override={args.model!r}.")
     tools = to_openai_tools(load_tool_declarations(args.tools))
     messages = [
         {"role": "system", "content": "You are a tool-routing smoke test. Use tools when appropriate."},
         {"role": "user", "content": "Tweet mới nhất của Sam Altman là gì?"},
     ]
-    response = provider.complete(messages, tools, model=args.model, temperature=0.0)
+    response = provider.complete(messages, tools, model=model_override, temperature=0.0)
     if not response.tool_calls:
         raise SystemExit("Provider did not return structured tool_calls.")
     first = response.tool_calls[0]
-    selected_model = args.model or getattr(provider, "default_model", None)
-    print(f"OK provider={args.provider} model={selected_model}")
+    print(f"OK provider={actual_provider} model={selected_model}")
     print(f"tool={first.name}")
     print(f"args={first.args}")
 
