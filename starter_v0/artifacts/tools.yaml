@@ -77,6 +77,16 @@ tools:
         headline: {type: string, default: "", description: "Tiêu đề"}
       required: [items, template]
 
+  - name: translate
+    description: "Dịch văn bản sang ngôn ngữ khác. Dùng khi user cung cấp text và yêu cầu dịch sang ngôn ngữ cụ thể. KHÔNG dùng khi user chưa cung cấp text — gọi clarify trước. Không dùng để tìm kiếm thông tin."
+    parameters:
+      type: object
+      properties:
+        text: {type: string, default: "", description: "Văn bản cần dịch (tối đa 500 ký tự)"}
+        source_lang: {type: string, default: "en", description: "Ngôn ngữ gốc, mặc định en (tiếng Anh). Dùng mã ISO 2 chữ cái: en, vi, ja, zh, fr, de"}
+        target_lang: {type: string, default: "vi", description: "Ngôn ngữ đích: vi=tiếng Việt, en=tiếng Anh, ja=tiếng Nhật, zh=tiếng Trung"}
+      required: [text]
+
   # ---------------- Bonus tools ----------------
   - name: send
     description: "Gửi một đoạn văn bản đi."
